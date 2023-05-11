@@ -128,7 +128,8 @@ def persist_lines(service, spreadsheet, lines):
     key_properties = {}
 
     headers_by_stream = {}
-    
+    batch_updates = []
+
     for line in lines:
         try:
             msg = singer.parse_message(line)
@@ -143,27 +144,41 @@ def persist_lines(service, spreadsheet, lines):
             schema = schemas[msg.stream]
             validate(msg.record, schema)
             flattened_record = flatten(msg.record)
-            
+
             matching_sheet = [s for s in spreadsheet['sheets'] if s['properties']['title'] == msg.stream]
             new_sheet_needed = len(matching_sheet) == 0
             range_name = "{}!A1:ZZZ".format(msg.stream)
-            append = functools.partial(append_to_sheet, service, spreadsheet['spreadsheetId'], range_name)
 
             if new_sheet_needed:
                 add_sheet(service, spreadsheet['spreadsheetId'], msg.stream)
-                spreadsheet = get_spreadsheet(service, spreadsheet['spreadsheetId']) # refresh this for future iterations
+                spreadsheet = get_spreadsheet(service, spreadsheet['spreadsheetId'])  # Refresh this for future iterations
                 headers_by_stream[msg.stream] = list(flattened_record.keys())
-                append(headers_by_stream[msg.stream])
-
             elif msg.stream not in headers_by_stream:
                 first_row = get_values(service, spreadsheet['spreadsheetId'], range_name + '1')
                 if 'values' in first_row:
                     headers_by_stream[msg.stream] = first_row.get('values', None)[0]
                 else:
                     headers_by_stream[msg.stream] = list(flattened_record.keys())
-                    append(headers_by_stream[msg.stream])
 
-            result = append([flattened_record.get(x, None) for x in headers_by_stream[msg.stream]]) # order by actual headers found in sheet
+            values = [flattened_record.get(x, None) for x in headers_by_stream[msg.stream]]
+            if any(len(str(value)) > 50000 for value in values):
+                # Split cell values that exceed the maximum limit
+                split_values = []
+                for value in values:
+                    if len(str(value)) > 50000:
+                        chunks = [str(value)[i:i + 50000] for i in range(0, len(str(value)), 50000)]
+                        split_values.extend(chunks)
+                    else:
+                        split_values.append(str(value))
+                batch_updates.extend({
+                    'range': range_name,
+                    'values': [[split_value] for split_value in split_values]
+                })
+            else:
+                batch_updates.append({
+                    'range': range_name,
+                    'values': [values]
+                })
 
             state = None
         elif isinstance(msg, singer.StateMessage):
@@ -175,7 +190,49 @@ def persist_lines(service, spreadsheet, lines):
         else:
             raise Exception("Unrecognized message {}".format(msg))
 
+    # Perform batch updates
+    batch_data = {
+        'valueInputOption': 'USER_ENTERED',
+        'data': batch_updates
+    }
+    try:
+        response = service.spreadsheets().values().batchUpdate(
+            spreadsheetId=spreadsheet['spreadsheetId'],
+            body=batch_data
+        ).execute()
+        if 'responses' in response:
+            for i, result in enumerate(response['responses']):
+                if 'error' in result:
+                    error_message = result['error']['message']
+                    invalid_value_range = result['error']['invalidValue']
+                    invalid_value_index = int(invalid_value_range.split("[")[-1].split("]")[0])
+                    logger.error("Error occurred while updating values: {}".format(error_message))
+                    logger.error("Invalid value at 'data[{}]'".format(invalid_value_index))
+                    raise Exception("Failed to update values. See logs for details.")
+
+    except HttpError as e:
+        if hasattr(e, 'content') and e.content:
+            error = json.loads(e.content.decode('utf-8'))['error']
+            error_message = error['message']
+            if 'values' in error:
+                invalid_value_range = error['values'][0]['range']
+                invalid_value_index = int(invalid_value_range.split("[")[-1].split("]")[0])
+                logger.error("Error occurred while updating values: {}".format(error_message))
+                logger.error("Invalid value at 'data[{}]'".format(invalid_value_index))
+            else:
+                logger.error("Error occurred while updating values: {}".format(error_message))
+            raise Exception("Failed to update values. See logs for details.")
+        else:
+            raise Exception("An error occurred while performing batch updates: {}".format(str(e)))
+
     return state
+
+
+
+def bulk_update(service, spreadsheet_id, data):
+    return service.spreadsheets().values().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body=data).execute()
 
         
 def main():
