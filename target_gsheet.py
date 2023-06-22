@@ -110,7 +110,7 @@ def append_to_sheet(service, spreadsheet_id, range, values):
         valueInputOption='USER_ENTERED',
         body={'values': [values]}).execute()
 
-def update_row(service, spreadsheet_id, range, values):
+def update_to_sheet(service, spreadsheet_id, range, values):
     return service.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
         range=range,
@@ -157,7 +157,7 @@ def persist_lines(service, spreadsheet, lines):
             new_sheet_needed = len(matching_sheet) == 0
             range_name = "{}!A1:ZZZ".format(msg.stream)
             append = functools.partial(append_to_sheet, service, spreadsheet['spreadsheetId'], range_name)
-            update_row = functools.partial(append_to_sheet, service, spreadsheet['spreadsheetId'])
+            update_row = functools.partial(update_to_sheet, service, spreadsheet['spreadsheetId'])
 
             if new_sheet_needed:
                 add_sheet(service, spreadsheet['spreadsheetId'], msg.stream)
@@ -184,6 +184,9 @@ def persist_lines(service, spreadsheet, lines):
                         update_range_name = "{}!A{}:ZZZ{}".format(msg.stream, index, index)
                         result = update_row(update_range_name, [flattened_record.get(x, None) for x in headers_by_stream[msg.stream]])
                         posted = True
+            if data is not None and not new_sheet_needed and not len(key_properties[msg.stream]):
+                print("No primary keys provided, not able to update existing rows")
+
             if not posted:
                 result = append([flattened_record.get(x, None) for x in headers_by_stream[msg.stream]]) # order by actual headers found in sheet
 
