@@ -110,6 +110,13 @@ def append_to_sheet(service, spreadsheet_id, range, values):
         valueInputOption='USER_ENTERED',
         body={'values': [values]}).execute()
 
+def update_row(service, spreadsheet_id, range, values):
+    return service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=range,
+        valueInputOption='USER_ENTERED',
+        body={'values': [values]}).execute()
+
 
 def flatten(d, parent_key='', sep='__'):
     items = []
@@ -128,8 +135,10 @@ def persist_lines(service, spreadsheet, lines):
     key_properties = {}
 
     headers_by_stream = {}
+    data = None
     
     for line in lines:
+        posted = False
         try:
             msg = singer.parse_message(line)
         except json.decoder.JSONDecodeError:
@@ -148,6 +157,7 @@ def persist_lines(service, spreadsheet, lines):
             new_sheet_needed = len(matching_sheet) == 0
             range_name = "{}!A1:ZZZ".format(msg.stream)
             append = functools.partial(append_to_sheet, service, spreadsheet['spreadsheetId'], range_name)
+            update_row = functools.partial(append_to_sheet, service, spreadsheet['spreadsheetId'])
 
             if new_sheet_needed:
                 add_sheet(service, spreadsheet['spreadsheetId'], msg.stream)
@@ -163,7 +173,19 @@ def persist_lines(service, spreadsheet, lines):
                     headers_by_stream[msg.stream] = list(flattened_record.keys())
                     append(headers_by_stream[msg.stream])
 
-            result = append([flattened_record.get(x, None) for x in headers_by_stream[msg.stream]]) # order by actual headers found in sheet
+            #remove duplicates row from sheet
+            if data is None:
+                data = get_values(service, spreadsheet['spreadsheetId'], range_name)
+            
+            if data is not None and not new_sheet_needed and len(key_properties[msg.stream]):
+                for i, row in enumerate(data["values"]):         
+                    if(row[key_properties[msg.stream + "_pk_index"][0]] == flattened_record[key_properties[msg.stream][0]]):
+                        index = i + 1
+                        update_range_name = "{}!A{}:ZZZ{}".format(msg.stream, index, index)
+                        result = update_row(update_range_name, [flattened_record.get(x, None) for x in headers_by_stream[msg.stream]])
+                        posted = True
+            if not posted:
+                result = append([flattened_record.get(x, None) for x in headers_by_stream[msg.stream]]) # order by actual headers found in sheet
 
             state = None
         elif isinstance(msg, singer.StateMessage):
@@ -172,6 +194,13 @@ def persist_lines(service, spreadsheet, lines):
         elif isinstance(msg, singer.SchemaMessage):
             schemas[msg.stream] = msg.schema
             key_properties[msg.stream] = msg.key_properties
+
+            pk_indexes = []
+            for i, property in enumerate(msg.schema.get("properties").keys()):
+                if property in msg.key_properties:
+                    pk_indexes.append(i)
+            key_properties[msg.stream + "_pk_index"] = pk_indexes
+
         else:
             raise Exception("Unrecognized message {}".format(msg))
 
