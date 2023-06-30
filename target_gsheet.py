@@ -168,7 +168,7 @@ def persist_lines(service, spreadsheet, lines):
             append = functools.partial(append_to_sheet, service, spreadsheet['spreadsheetId'], range_name)
             update_row = functools.partial(update_to_sheet, service, spreadsheet['spreadsheetId'])
 
-            if data is None:
+            if data is None and not new_sheet_needed:
                 data = get_values(service, spreadsheet['spreadsheetId'], range_name)
                 sheet_headers = data.get('values')[0]
                 pks = key_properties[msg.stream]
