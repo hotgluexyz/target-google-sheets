@@ -49,7 +49,10 @@ def get_credentials(config):
     Returns:
         Credentials, the obtained credential.
     """
-    credentials = client.AccessTokenCredentials(config['access_token'], config.get("user-agent", 'target-google-sheets <hello@hotglue.xyz>'))
+    auth_url = config.get('auth_url')
+    if not auth_url:
+        auth_url = 'https://oauth2.googleapis.com/token'
+    credentials = client.OAuth2Credentials(config['access_token'], config['client_id'], config['client_secret'], config['refresh_token'], config['expires_in'], auth_url, config.get("user-agent", 'target-google-sheets <hello@hotglue.xyz>'))
     return credentials
 
 
@@ -110,6 +113,13 @@ def append_to_sheet(service, spreadsheet_id, range, values):
         valueInputOption='USER_ENTERED',
         body={'values': [values]}).execute()
 
+def update_to_sheet(service, spreadsheet_id, range, values):
+    return service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=range,
+        valueInputOption='USER_ENTERED',
+        body={'values': [values]}).execute()
+
 
 def flatten(d, parent_key='', sep='__'):
     items = []
@@ -121,6 +131,12 @@ def flatten(d, parent_key='', sep='__'):
             items.append((new_key, str(v) if type(v) is list else v))
     return dict(items)
 
+def get_pk_index(properties_arr, key_properties):
+    pk_indexes = []
+    for i, property in enumerate(properties_arr):
+        if property in key_properties:
+            pk_indexes.append(i)
+    return pk_indexes
 
 def persist_lines(service, spreadsheet, lines):
     state = None
@@ -128,8 +144,10 @@ def persist_lines(service, spreadsheet, lines):
     key_properties = {}
 
     headers_by_stream = {}
+    data = None
     
     for line in lines:
+        posted = False
         try:
             msg = singer.parse_message(line)
         except json.decoder.JSONDecodeError:
@@ -148,6 +166,14 @@ def persist_lines(service, spreadsheet, lines):
             new_sheet_needed = len(matching_sheet) == 0
             range_name = "{}!A1:ZZZ".format(msg.stream)
             append = functools.partial(append_to_sheet, service, spreadsheet['spreadsheetId'], range_name)
+            update_row = functools.partial(update_to_sheet, service, spreadsheet['spreadsheetId'])
+
+            if data is None and not new_sheet_needed:
+                data = get_values(service, spreadsheet['spreadsheetId'], range_name)
+                sheet_headers = data.get('values')[0]
+                pks = key_properties[msg.stream]
+                pk_indexes = get_pk_index(sheet_headers, pks)
+                key_properties[msg.stream + "_pk_index"] = pk_indexes
 
             if new_sheet_needed:
                 add_sheet(service, spreadsheet['spreadsheetId'], msg.stream)
@@ -159,24 +185,48 @@ def persist_lines(service, spreadsheet, lines):
                 first_row = get_values(service, spreadsheet['spreadsheetId'], range_name + '1')
                 if 'values' in first_row:
                     headers_by_stream[msg.stream] = first_row.get('values', None)[0]
+                    new_records_columns = flattened_record.keys()
+                    new_columns = [col for col in new_records_columns if col not in headers_by_stream[msg.stream]]
+                    if new_columns:
+                        #update headers in google sheets mantaining the order of existing columns
+                        new_headers = headers_by_stream[msg.stream] + new_columns
+                        headers_range = "{}!A1:ZZZ1".format(msg.stream)  
+                        update_row(headers_range, new_headers)
+                        headers_by_stream[msg.stream] = new_headers
+                        # update the primary key index for dupplicates logic
+                        pks = key_properties[msg.stream]
+                        pk_indexes = get_pk_index(new_headers, pks)
+                        key_properties[msg.stream + "_pk_index"] = pk_indexes         
                 else:
                     headers_by_stream[msg.stream] = list(flattened_record.keys())
                     append(headers_by_stream[msg.stream])
+            
+            if data is not None and not new_sheet_needed and key_properties.get(msg.stream) and key_properties.get(msg.stream + "_pk_index"):
+                for i, row in enumerate(data["values"]):
+                    pk_index = key_properties[msg.stream + "_pk_index"][0]         
+                    if len(row) >= pk_index and (row[pk_index] == flattened_record[key_properties[msg.stream][0]]):
+                        index = i + 1
+                        update_range_name = "{}!A{}:ZZZ{}".format(msg.stream, index, index)
+                        result = update_row(update_range_name, [flattened_record.get(x, None) for x in headers_by_stream[msg.stream]])
+                        posted = True
+            if data is not None and not new_sheet_needed and not len(key_properties[msg.stream]):
+                print("No primary keys provided, not able to update existing rows")
 
-            values = [flattened_record.get(x, None) for x in headers_by_stream[msg.stream]]
+            if not posted:            
+                values = [flattened_record.get(x, None) for x in headers_by_stream[msg.stream]]
 
-            # Split cell values that exceed the maximum limit
-            split_values = []
-            for value in values:
-                if len(str(value)) > 50000:
-                    chunks = [str(value)[i:i + 50000] for i in range(0, len(str(value)), 50000)]
-                    split_values.extend(chunks)
-                else:
-                    split_values.append(str(value))
+                # Split cell values that exceed the maximum limit
+                split_values = []
+                for value in values:
+                    if len(str(value)) > 50000:
+                        chunks = [str(value)[i:i + 50000] for i in range(0, len(str(value)), 50000)]
+                        split_values.extend(chunks)
+                    else:
+                        split_values.append(str(value))
 
-            # Perform batch updates for split values
-            for split_value in split_values:
-                result = append([split_value])  # Order by actual headers found in sheet
+                # Perform batch updates for split values
+                for split_value in split_values:
+                    result = append([split_value])  # Order by actual headers found in sheet
 
             state = None
         elif isinstance(msg, singer.StateMessage):
@@ -185,6 +235,7 @@ def persist_lines(service, spreadsheet, lines):
         elif isinstance(msg, singer.SchemaMessage):
             schemas[msg.stream] = msg.schema
             key_properties[msg.stream] = msg.key_properties
+
         else:
             raise Exception("Unrecognized message {}".format(msg))
 
