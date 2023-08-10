@@ -3,7 +3,7 @@
 from setuptools import setup
 
 setup(name='target-google-sheets',
-      version='0.2.6',
+      version='0.2.7',
       description='Singer.io target for writing data to Google Sheets',
       author='Stitch',
       url='https://singer.io',
