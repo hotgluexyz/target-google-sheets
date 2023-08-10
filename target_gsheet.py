@@ -1,17 +1,11 @@
 #!/usr/bin/env python3
 
 import argparse
-import functools
 import io
-import os
 import sys
 import json
 import logging
 import collections
-import threading
-import http.client
-import urllib
-import pkg_resources
 import backoff
 
 from jsonschema import validate
@@ -21,10 +15,7 @@ import httplib2
 
 from apiclient import discovery
 from googleapiclient.errors import HttpError
-from oauth2client import client
-from oauth2client import tools
-from oauth2client.file import Storage
-
+from oauth2client import client, tools, GOOGLE_REVOKE_URI, GOOGLE_TOKEN_URI
 
 # Read the config
 try:
@@ -49,7 +40,17 @@ def get_credentials(config):
     Returns:
         Credentials, the obtained credential.
     """
-    credentials = client.AccessTokenCredentials(config['access_token'], config.get("user-agent", 'target-google-sheets <hello@hotglue.xyz>'))
+    credentials = client.OAuth2Credentials(
+        access_token=None,  # set access_token to None since we use a refresh token
+        client_id=config["client_id"],
+        client_secret=config["client_secret"],
+        refresh_token=config["refresh_token"],
+        token_uri=GOOGLE_TOKEN_URI,
+        user_agent=config.get("user-agent", 'target-google-sheets <hello@hotglue.xyz>'),
+        revoke_uri=GOOGLE_REVOKE_URI,
+        token_expiry=None
+    )
+
     return credentials
 
 
@@ -62,6 +63,9 @@ def giveup(exc):
 def retry_handler(details):
     logger.info("Http unsuccessful request -- Retry %s/%s", details['tries'], MAX_RETRIES)
 
+def divide(l, n):
+    for i in range(0, len(l), n): 
+        yield l[i:i + n]
 
 def emit_state(state):
     if state is not None:
@@ -97,6 +101,26 @@ def add_sheet(service, spreadsheet_id, title):
         }).execute()
 
 
+def append_new_lines_to_sheet(service, spreadsheet_id, sheet_id, length):
+    batch_data = {
+        "requests": [
+            {
+                "appendDimension": {
+                    "sheetId": sheet_id,
+                    "dimension": "ROWS",
+                    "length": length
+                }
+            }]
+    }
+    try:
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body=batch_data,
+        ).execute()
+    except HttpError as e:
+        raise Exception("An error occurred while appending more grid space: {}".format(str(e)))
+
+
 @backoff.on_exception(backoff.expo,
                       HttpError,
                       max_tries=MAX_RETRIES,
@@ -104,11 +128,14 @@ def add_sheet(service, spreadsheet_id, title):
                       giveup=giveup,
                       on_backoff=retry_handler)
 def append_to_sheet(service, spreadsheet_id, range, values):
-    return service.spreadsheets().values().append(
-        spreadsheetId=spreadsheet_id,
-        range=range,
-        valueInputOption='USER_ENTERED',
-        body={'values': [values]}).execute()
+    try:
+        return service.spreadsheets().values().append(
+            spreadsheetId=spreadsheet_id,
+            range=range,
+            valueInputOption='USER_ENTERED',
+            body={'values': values}).execute()
+    except Exception as e:
+        logger.error("Error: {}".format(str(e)))
 
 
 def flatten(d, parent_key='', sep='__'):
@@ -130,7 +157,7 @@ def persist_lines(service, spreadsheet, lines):
     headers_by_stream = {}
     batch_updates = []
 
-    for line in lines:
+    for line_idx, line in enumerate(lines):
         try:
             msg = singer.parse_message(line)
         except json.decoder.JSONDecodeError:
@@ -147,12 +174,13 @@ def persist_lines(service, spreadsheet, lines):
 
             matching_sheet = [s for s in spreadsheet['sheets'] if s['properties']['title'] == msg.stream]
             new_sheet_needed = len(matching_sheet) == 0
-            range_name = "{}!A1:ZZZ".format(msg.stream)
+            range_name = "{}!A{}:ZZZ".format(msg.stream, line_idx)
 
             if new_sheet_needed:
                 add_sheet(service, spreadsheet['spreadsheetId'], msg.stream)
                 spreadsheet = get_spreadsheet(service, spreadsheet['spreadsheetId'])  # Refresh this for future iterations
                 headers_by_stream[msg.stream] = list(flattened_record.keys())
+
             elif msg.stream not in headers_by_stream:
                 first_row = get_values(service, spreadsheet['spreadsheetId'], range_name + '1')
                 if 'values' in first_row:
@@ -160,6 +188,15 @@ def persist_lines(service, spreadsheet, lines):
                 else:
                     headers_by_stream[msg.stream] = list(flattened_record.keys())
 
+            sheet_id = [
+                sheet['properties']["sheetId"]
+                for sheet in spreadsheet['sheets'] if sheet['properties']["title"] == msg.stream
+            ][0]
+            sheet_row_count = [
+                sheet['properties']["gridProperties"]["rowCount"]
+                for sheet in spreadsheet['sheets'] if sheet['properties']["title"] == msg.stream
+            ][0]
+            
             values = [flattened_record.get(x, None) for x in headers_by_stream[msg.stream]]
             if any(len(str(value)) > 50000 for value in values):
                 # Split cell values that exceed the maximum limit
@@ -191,39 +228,27 @@ def persist_lines(service, spreadsheet, lines):
             raise Exception("Unrecognized message {}".format(msg))
 
     # Perform batch updates
-    batch_data = {
-        'valueInputOption': 'USER_ENTERED',
-        'data': batch_updates
-    }
-    try:
-        response = service.spreadsheets().values().batchUpdate(
-            spreadsheetId=spreadsheet['spreadsheetId'],
-            body=batch_data
-        ).execute()
-        if 'responses' in response:
-            for i, result in enumerate(response['responses']):
-                if 'error' in result:
-                    error_message = result['error']['message']
-                    invalid_value_range = result['error']['invalidValue']
-                    invalid_value_index = int(invalid_value_range.split("[")[-1].split("]")[0])
-                    logger.error("Error occurred while updating values: {}".format(error_message))
-                    logger.error("Invalid value at 'data[{}]'".format(invalid_value_index))
-                    raise Exception("Failed to update values. See logs for details.")
-
-    except HttpError as e:
-        if hasattr(e, 'content') and e.content:
-            error = json.loads(e.content.decode('utf-8'))['error']
-            error_message = error['message']
-            if 'values' in error:
-                invalid_value_range = error['values'][0]['range']
-                invalid_value_index = int(invalid_value_range.split("[")[-1].split("]")[0])
-                logger.error("Error occurred while updating values: {}".format(error_message))
-                logger.error("Invalid value at 'data[{}]'".format(invalid_value_index))
-            else:
-                logger.error("Error occurred while updating values: {}".format(error_message))
-            raise Exception("Failed to update values. See logs for details.")
-        else:
-            raise Exception("An error occurred while performing batch updates: {}".format(str(e)))
+    for idx, small_batch in enumerate(divide(batch_updates, 500)):
+        logger.debug(f"Iterating through smallbatch #{idx}")
+        if sheet_row_count >= idx * 500:
+            logger.debug(
+                "Inserting more grid space ({} ROWS) for sheet {}".format(
+                    500,
+                    sheet_id
+            ))
+            append_new_lines_to_sheet(service, spreadsheet['spreadsheetId'], sheet_id, 500)
+        
+        insert_batch_data = {
+            'valueInputOption': 'USER_ENTERED',
+            'data': small_batch
+        }
+        try:
+            service.spreadsheets().values().batchUpdate(
+                spreadsheetId=spreadsheet['spreadsheetId'],
+                body=insert_batch_data,
+            ).execute()
+        except HttpError as e:
+            raise Exception("An error occurred while appending more grid space: {}".format(str(e)))
 
     return state
 
@@ -242,11 +267,16 @@ def main():
 
     # Get the Google OAuth creds
     credentials = get_credentials(config)
-    http = credentials.authorize(httplib2.Http())
+    http = httplib2.Http()
+    credentials = credentials.authorize(http)
     discoveryUrl = ('https://sheets.googleapis.com/$discovery/rest?'
                     'version=v4')
-    service = discovery.build('sheets', 'v4', http=http,
-                              discoveryServiceUrl=discoveryUrl)
+    service = discovery.build(
+        'sheets',
+        'v4',
+        http=http,
+        discoveryServiceUrl=discoveryUrl
+    )
 
     # Get spreadsheet_id
     spreadsheet = get_spreadsheet(service, config['spreadsheet_id'])
