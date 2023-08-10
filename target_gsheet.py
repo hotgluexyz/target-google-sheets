@@ -42,9 +42,9 @@ def get_credentials(config):
     """
     credentials = client.OAuth2Credentials(
         access_token=None,  # set access_token to None since we use a refresh token
-        client_id=config["client_id"],
-        client_secret=config["client_secret"],
-        refresh_token=config["refresh_token"],
+        client_id=config.get("client_id"),
+        client_secret=config.get("client_secret"),
+        refresh_token=config.get("refresh_token"),
         token_uri=GOOGLE_TOKEN_URI,
         user_agent=config.get("user-agent", 'target-google-sheets <hello@hotglue.xyz>'),
         revoke_uri=GOOGLE_REVOKE_URI,
@@ -137,6 +137,13 @@ def append_to_sheet(service, spreadsheet_id, range, values):
     except Exception as e:
         logger.error("Error: {}".format(str(e)))
 
+def update_to_sheet(service, spreadsheet_id, range, values):
+    return service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=range,
+        valueInputOption='USER_ENTERED',
+        body={'values': [values]}).execute()
+
 
 def flatten(d, parent_key='', sep='__'):
     items = []
@@ -148,6 +155,12 @@ def flatten(d, parent_key='', sep='__'):
             items.append((new_key, str(v) if type(v) is list else v))
     return dict(items)
 
+def get_pk_index(properties_arr, key_properties):
+    pk_indexes = []
+    for i, property in enumerate(properties_arr):
+        if property in key_properties:
+            pk_indexes.append(i)
+    return pk_indexes
 
 def persist_lines(service, spreadsheet, lines):
     state = None
@@ -185,6 +198,18 @@ def persist_lines(service, spreadsheet, lines):
                 first_row = get_values(service, spreadsheet['spreadsheetId'], range_name + '1')
                 if 'values' in first_row:
                     headers_by_stream[msg.stream] = first_row.get('values', None)[0]
+                    new_records_columns = flattened_record.keys()
+                    new_columns = [col for col in new_records_columns if col not in headers_by_stream[msg.stream]]
+                    if new_columns:
+                        #update headers in google sheets mantaining the order of existing columns
+                        new_headers = headers_by_stream[msg.stream] + new_columns
+                        headers_range = "{}!A1:ZZZ1".format(msg.stream)  
+                        update_row(headers_range, new_headers)
+                        headers_by_stream[msg.stream] = new_headers
+                        # update the primary key index for dupplicates logic
+                        pks = key_properties[msg.stream]
+                        pk_indexes = get_pk_index(new_headers, pks)
+                        key_properties[msg.stream + "_pk_index"] = pk_indexes         
                 else:
                     headers_by_stream[msg.stream] = list(flattened_record.keys())
 
@@ -224,6 +249,7 @@ def persist_lines(service, spreadsheet, lines):
         elif isinstance(msg, singer.SchemaMessage):
             schemas[msg.stream] = msg.schema
             key_properties[msg.stream] = msg.key_properties
+
         else:
             raise Exception("Unrecognized message {}".format(msg))
 
