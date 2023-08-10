@@ -229,17 +229,15 @@ def persist_lines(service, spreadsheet, lines):
 
     # Perform batch updates
     for idx, small_batch in enumerate(divide(batch_updates, 500)):
-        logger.debug(f"Iterating through smallbatch #{idx}")
-        # TODO: Create a workaround for sheets that have more than 5500 rows,
-        # maybe we should split in two sheets?
-        if sheet_row_count >= idx * 500:
-            logger.debug(
+        logger.info(f"Iterating through smallbatch #{idx}")
+        if sheet_row_count <= idx * 500:
+            logger.info(
                 "Inserting more grid space ({} ROWS) for sheet {}".format(
                     500,
                     sheet_id
             ))
             append_new_lines_to_sheet(service, spreadsheet['spreadsheetId'], sheet_id, 500)
-        
+
         insert_batch_data = {
             'valueInputOption': 'USER_ENTERED',
             'data': small_batch
