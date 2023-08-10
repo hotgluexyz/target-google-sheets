@@ -230,6 +230,8 @@ def persist_lines(service, spreadsheet, lines):
     # Perform batch updates
     for idx, small_batch in enumerate(divide(batch_updates, 500)):
         logger.debug(f"Iterating through smallbatch #{idx}")
+        # TODO: Create a workaround for sheets that have more than 5500 rows,
+        # maybe we should split in two sheets?
         if sheet_row_count >= idx * 500:
             logger.debug(
                 "Inserting more grid space ({} ROWS) for sheet {}".format(
