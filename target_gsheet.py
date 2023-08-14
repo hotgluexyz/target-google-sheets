@@ -80,7 +80,7 @@ def get_values(service, spreadsheet_id, range):
     return service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id, range=range).execute()
 
-def add_sheet(service, spreadsheet_id, title):
+def add_sheet(service, spreadsheet_id, title, lines=1000, columns=100):
     return service.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id,
         body={
@@ -90,8 +90,8 @@ def add_sheet(service, spreadsheet_id, title):
                     'properties': {
                         'title': title,
                         'gridProperties': {
-                            'rowCount': 1000,
-                            'columnCount': 26
+                            'rowCount': lines,
+                            'columnCount': columns
                         }
                     }
                     }
@@ -99,6 +99,11 @@ def add_sheet(service, spreadsheet_id, title):
             ]
         }).execute()
 
+def append_schema_keys(record, schema):
+    for key in schema['properties']:
+        if key not in record:
+            record[key] = None
+    return record
 
 @backoff.on_exception(backoff.expo,
                       HttpError,
@@ -146,7 +151,9 @@ def persist_lines(service, spreadsheet, lines):
     headers_by_stream = {}
     data = None
     
-    for line in lines:
+    lines = list(lines)
+
+    for line_no, line in enumerate(lines):
         posted = False
         try:
             msg = singer.parse_message(line)
@@ -161,10 +168,11 @@ def persist_lines(service, spreadsheet, lines):
             schema = schemas[msg.stream]
             validate(msg.record, schema)
             flattened_record = flatten(msg.record)
+            flattened_record = append_schema_keys(flattened_record, schema)
             
             matching_sheet = [s for s in spreadsheet['sheets'] if s['properties']['title'] == msg.stream]
             new_sheet_needed = len(matching_sheet) == 0
-            range_name = "{}!A1:ZZZ".format(msg.stream)
+            range_name = "{}!A{}:ZZZ".format(msg.stream, line_no)
             append = functools.partial(append_to_sheet, service, spreadsheet['spreadsheetId'], range_name)
             update_row = functools.partial(update_to_sheet, service, spreadsheet['spreadsheetId'])
 
@@ -176,7 +184,7 @@ def persist_lines(service, spreadsheet, lines):
                 key_properties[msg.stream + "_pk_index"] = pk_indexes
 
             if new_sheet_needed:
-                add_sheet(service, spreadsheet['spreadsheetId'], msg.stream)
+                add_sheet(service, spreadsheet['spreadsheetId'], msg.stream, len(lines) * 2, len(lines[0]))
                 spreadsheet = get_spreadsheet(service, spreadsheet['spreadsheetId']) # refresh this for future iterations
                 headers_by_stream[msg.stream] = list(flattened_record.keys())
                 append(headers_by_stream[msg.stream])
