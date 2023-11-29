@@ -72,7 +72,7 @@ def emit_state(state):
         logger.debug('Emitting state {}'.format(line))
         sys.stdout.write("{}\n".format(line))
         sys.stdout.flush()
-        
+
 def get_spreadsheet(service, spreadsheet_id):
     return service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
 
@@ -150,7 +150,7 @@ def persist_lines(service, spreadsheet, lines):
 
     headers_by_stream = {}
     data = None
-    
+
     lines = list(lines)
 
     for line_no, line in enumerate(lines):
@@ -169,7 +169,7 @@ def persist_lines(service, spreadsheet, lines):
             validate(msg.record, schema)
             flattened_record = flatten(msg.record)
             flattened_record = append_schema_keys(flattened_record, schema)
-            
+
             matching_sheet = [s for s in spreadsheet['sheets'] if s['properties']['title'] == msg.stream]
             new_sheet_needed = len(matching_sheet) == 0
             range_name = "{}!A{}:ZZZ".format(msg.stream, line_no)
@@ -184,7 +184,9 @@ def persist_lines(service, spreadsheet, lines):
                 key_properties[msg.stream + "_pk_index"] = pk_indexes
 
             if new_sheet_needed:
-                add_sheet(service, spreadsheet['spreadsheetId'], msg.stream, len(lines) * 2, len(lines[0]))
+                columns_to_be_added = len(json.loads(lines[0]).get("schema", {}).get("properties", {}).keys())
+                lines_to_be_added = len(["line" for line in lines if json.loads(line).get("stream") == msg.stream and json.loads(line).get("type") == "RECORD"])
+                add_sheet(service, spreadsheet['spreadsheetId'], msg.stream, lines_to_be_added, columns_to_be_added)
                 spreadsheet = get_spreadsheet(service, spreadsheet['spreadsheetId']) # refresh this for future iterations
                 headers_by_stream[msg.stream] = list(flattened_record.keys())
                 append(headers_by_stream[msg.stream])
@@ -198,20 +200,20 @@ def persist_lines(service, spreadsheet, lines):
                     if new_columns:
                         #update headers in google sheets mantaining the order of existing columns
                         new_headers = headers_by_stream[msg.stream] + new_columns
-                        headers_range = "{}!A1:ZZZ1".format(msg.stream)  
+                        headers_range = "{}!A1:ZZZ1".format(msg.stream)
                         update_row(headers_range, new_headers)
                         headers_by_stream[msg.stream] = new_headers
                         # update the primary key index for dupplicates logic
                         pks = key_properties[msg.stream]
                         pk_indexes = get_pk_index(new_headers, pks)
-                        key_properties[msg.stream + "_pk_index"] = pk_indexes         
+                        key_properties[msg.stream + "_pk_index"] = pk_indexes
                 else:
                     headers_by_stream[msg.stream] = list(flattened_record.keys())
                     append(headers_by_stream[msg.stream])
-            
+
             if data is not None and not new_sheet_needed and key_properties.get(msg.stream) and key_properties.get(msg.stream + "_pk_index"):
                 for i, row in enumerate(data["values"]):
-                    pk_index = key_properties[msg.stream + "_pk_index"][0]         
+                    pk_index = key_properties[msg.stream + "_pk_index"][0]
                     if len(row) >= pk_index and (row[pk_index] == flattened_record[key_properties[msg.stream][0]]):
                         index = i + 1
                         update_range_name = "{}!A{}:ZZZ{}".format(msg.stream, index, index)
@@ -236,7 +238,7 @@ def persist_lines(service, spreadsheet, lines):
 
     return state
 
-        
+
 def main():
     # Read the config
     with open(flags.config) as input:
