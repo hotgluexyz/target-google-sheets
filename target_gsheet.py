@@ -105,8 +105,9 @@ def append_schema_keys(record, schema):
             record[key] = None
     return record
 
-@backoff.on_exception(backoff.expo,
+@backoff.on_exception(backoff.constant,
                       HttpError,
+                      interval=60,
                       max_tries=MAX_RETRIES,
                       jitter=None,
                       giveup=giveup,
@@ -118,6 +119,12 @@ def append_to_sheet(service, spreadsheet_id, range, values):
         valueInputOption='USER_ENTERED',
         body={'values': [values]}).execute()
 
+@backoff.on_exception(backoff.expo,
+                      HttpError,
+                      max_tries=MAX_RETRIES,
+                      jitter=None,
+                      giveup=giveup,
+                      on_backoff=retry_handler)
 def update_to_sheet(service, spreadsheet_id, range, values):
     return service.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
