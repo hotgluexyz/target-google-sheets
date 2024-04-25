@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import argparse
-import collections.abc
 import functools
 import io
 import os
