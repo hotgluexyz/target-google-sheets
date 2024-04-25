@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import collections.abc
 import functools
 import io
 import os
@@ -137,7 +138,7 @@ def flatten(d, parent_key='', sep='__'):
     items = []
     for k, v in d.items():
         new_key = parent_key + sep + k if parent_key else k
-        if isinstance(v, collections.MutableMapping):
+        if isinstance(v, collections.abc.MutableMapping):
             items.extend(flatten(v, new_key, sep=sep).items())
         else:
             items.append((new_key, str(v) if type(v) is list else v))
