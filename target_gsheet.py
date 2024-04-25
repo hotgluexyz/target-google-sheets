@@ -25,6 +25,11 @@ from oauth2client import client
 from oauth2client import tools
 from oauth2client.file import Storage
 
+try:
+    collectionsAbc = collections.abc
+except AttributeError:
+    collectionsAbc = collections   
+
 
 # Read the config
 try:
@@ -137,7 +142,7 @@ def flatten(d, parent_key='', sep='__'):
     items = []
     for k, v in d.items():
         new_key = parent_key + sep + k if parent_key else k
-        if isinstance(v, collections.abc.MutableMapping):
+        if isinstance(v, collectionsAbc.MutableMapping):
             items.extend(flatten(v, new_key, sep=sep).items())
         else:
             items.append((new_key, str(v) if type(v) is list else v))
