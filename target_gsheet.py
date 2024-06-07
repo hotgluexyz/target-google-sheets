@@ -118,11 +118,14 @@ def append_schema_keys(record, schema):
                       giveup=giveup,
                       on_backoff=retry_handler)
 def append_to_sheet(service, spreadsheet_id, range, values):
-    return service.spreadsheets().values().append(
+    response = service.spreadsheets().values().append(
         spreadsheetId=spreadsheet_id,
         range=range,
         valueInputOption='USER_ENTERED',
         body={'values': [values]}).execute()
+    logger.info(f"Appended data to sheet {spreadsheet_id}. Response: {response}")
+    return response
+
 
 @backoff.on_exception(backoff.expo,
                       HttpError,
@@ -131,11 +134,13 @@ def append_to_sheet(service, spreadsheet_id, range, values):
                       giveup=giveup,
                       on_backoff=retry_handler)
 def update_to_sheet(service, spreadsheet_id, range, values):
-    return service.spreadsheets().values().update(
+    response = service.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
         range=range,
         valueInputOption='USER_ENTERED',
         body={'values': [values]}).execute()
+    logger.info(f"Updated data in sheet {spreadsheet_id}. Response: {response}")
+    return response
 
 
 def flatten(d, parent_key='', sep='__'):
