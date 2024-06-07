@@ -190,10 +190,15 @@ def persist_lines(service, spreadsheet, lines):
 
             if data is None and not new_sheet_needed:
                 data = get_values(service, spreadsheet['spreadsheetId'], range_name)
-                sheet_headers = data.get('values')[0]
-                pks = key_properties[msg.stream]
-                pk_indexes = get_pk_index(sheet_headers, pks)
-                key_properties[msg.stream + "_pk_index"] = pk_indexes
+
+                if data.get('values'):
+                    sheet_headers = data.get('values')[0]
+                    pks = key_properties[msg.stream]
+                    pk_indexes = get_pk_index(sheet_headers, pks)
+                    key_properties[msg.stream + "_pk_index"] = pk_indexes
+                else:
+                    headers_by_stream[msg.stream] = list(flattened_record.keys())
+                    append(headers_by_stream[msg.stream])
 
             if new_sheet_needed:
                 columns_to_be_added = len(json.loads(lines[0]).get("schema", {}).get("properties", {}).keys())
