@@ -24,6 +24,7 @@ from googleapiclient.errors import HttpError
 from oauth2client import client
 from oauth2client import tools
 from oauth2client.file import Storage
+import ssl
 
 try:
     collectionsAbc = collections.abc
@@ -110,13 +111,20 @@ def append_schema_keys(record, schema):
             record[key] = None
     return record
 
-@backoff.on_exception(backoff.constant,
-                      HttpError,
-                      interval=60,
-                      max_tries=MAX_RETRIES,
-                      jitter=None,
-                      giveup=giveup,
-                      on_backoff=retry_handler)
+@backoff.on_exception(
+    backoff.constant,
+    (
+        HttpError,
+        ssl.SSLEOFError,
+        ConnectionError,
+        ConnectionResetError,
+    ),
+    interval=60,
+    max_tries=MAX_RETRIES,
+    jitter=None,
+    giveup=giveup,
+    on_backoff=retry_handler,
+)
 def append_to_sheet(service, spreadsheet_id, range, values):
     response = service.spreadsheets().values().append(
         spreadsheetId=spreadsheet_id,
@@ -127,12 +135,19 @@ def append_to_sheet(service, spreadsheet_id, range, values):
     return response
 
 
-@backoff.on_exception(backoff.expo,
-                      HttpError,
-                      max_tries=MAX_RETRIES,
-                      jitter=None,
-                      giveup=giveup,
-                      on_backoff=retry_handler)
+@backoff.on_exception(
+    backoff.expo,
+    (
+        HttpError,
+        ssl.SSLEOFError,
+        ConnectionError,
+        ConnectionResetError,
+    ),
+    max_tries=MAX_RETRIES,
+    jitter=None,
+    giveup=giveup,
+    on_backoff=retry_handler,
+)
 def update_to_sheet(service, spreadsheet_id, range, values):
     response = service.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
