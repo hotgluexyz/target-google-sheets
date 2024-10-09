@@ -251,7 +251,7 @@ def persist_lines(service, spreadsheet, lines):
             if data is not None and not new_sheet_needed and key_properties.get(msg.stream) and key_properties.get(msg.stream + "_pk_index"):
                 for i, row in enumerate(data["values"]):
                     pk_index = key_properties[msg.stream + "_pk_index"][0]
-                    if len(row) != 0 and len(row) >= pk_index and (row[pk_index] == flattened_record[key_properties[msg.stream][0]]):
+                    if len(row) != 0 and len(row) > pk_index and (row[pk_index] == flattened_record[key_properties[msg.stream][0]]):
                         index = i + 1
                         update_range_name = "{}!A{}:ZZZ{}".format(msg.stream, index, index)
                         result = update_row(update_range_name, [flattened_record.get(x, None) for x in headers_by_stream[msg.stream]])
