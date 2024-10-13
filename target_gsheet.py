@@ -46,19 +46,27 @@ logger = singer.get_logger()
 
 MAX_RETRIES = 10
 
-def get_credentials(config):
-    """Gets valid user credentials from storage.
 
-    If nothing has been stored, or if the stored credentials are invalid,
-    the OAuth2 flow is completed to obtain the new credentials.
+def get_credentials(config):
+    """Gets valid user credentials from environment variables or config.
+
+    If environment variables are set, use them; otherwise, use the values from the config file.
 
     Returns:
         Credentials, the obtained credential.
     """
-    auth_url = config.get('auth_url')
-    if not auth_url:
-        auth_url = 'https://oauth2.googleapis.com/token'
-    credentials = client.OAuth2Credentials(config['access_token'], config['client_id'], config['client_secret'], config['refresh_token'], config['expires_in'], auth_url, config.get("user-agent", 'target-google-sheets <hello@hotglue.xyz>'))
+    client_id = os.getenv('GSHEET_CLIENT_ID', config.get('client_id'))
+    client_secret = os.getenv('GSHEET_CLIENT_SECRET', config.get('client_secret'))
+    access_token = os.getenv('GSHEET_ACCESS_TOKEN', config.get('access_token'))
+    refresh_token = os.getenv('GSHEET_REFRESH_TOKEN', config.get('refresh_token'))
+    expires_in = config.get('expires_in', 3600)
+    auth_url = config.get('auth_url', 'https://oauth2.googleapis.com/token')
+
+    credentials = client.OAuth2Credentials(
+        access_token, client_id, client_secret, refresh_token, expires_in, auth_url,
+        config.get("user-agent", 'target-google-sheets <hello@hotglue.xyz>')
+    )
+    
     return credentials
 
 
@@ -204,7 +212,8 @@ def persist_lines(service, spreadsheet, lines):
 
             matching_sheet = [s for s in spreadsheet['sheets'] if s['properties']['title'] == msg.stream]
             new_sheet_needed = len(matching_sheet) == 0
-            range_name = "{}!A{}:ZZZ".format(msg.stream, line_no)
+            range_name = "{}!A{}:ZZZ".format(msg.stream, line_no-1)
+            logger.info(f"Range name: {range_name}")
             append = functools.partial(append_to_sheet, service, spreadsheet['spreadsheetId'], range_name)
             update_row = functools.partial(update_to_sheet, service, spreadsheet['spreadsheetId'])
 
@@ -213,9 +222,11 @@ def persist_lines(service, spreadsheet, lines):
 
                 if data.get('values'):
                     sheet_headers = data.get('values')[0]
+                    logger.info(f"Sheet headers: {sheet_headers}")
                     pks = key_properties[msg.stream]
                     pk_indexes = get_pk_index(sheet_headers, pks)
                     key_properties[msg.stream + "_pk_index"] = pk_indexes
+                    logger.info(f"Primary key indexes: {key_properties[msg.stream + '_pk_index']}")
                 else:
                     headers_by_stream[msg.stream] = list(flattened_record.keys())
                     append(headers_by_stream[msg.stream])
@@ -275,7 +286,6 @@ def persist_lines(service, spreadsheet, lines):
 
     return state
 
-
 def main():
     # Read the config
     with open(flags.config) as input:
@@ -290,7 +300,7 @@ def main():
                               discoveryServiceUrl=discoveryUrl)
 
     # Get spreadsheet_id
-    spreadsheet = get_spreadsheet(service, config['spreadsheet_id'])
+    spreadsheet = get_spreadsheet(service, config.get('spreadsheet_id', os.getenv('GSHEET_SPREADSHEET_ID')))
 
     input = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
     state = None
