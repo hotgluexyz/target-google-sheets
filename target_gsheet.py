@@ -212,7 +212,7 @@ def persist_lines(service, spreadsheet, lines):
 
             matching_sheet = [s for s in spreadsheet['sheets'] if s['properties']['title'] == msg.stream]
             new_sheet_needed = len(matching_sheet) == 0
-            range_name = "{}!A{}:ZZZ".format(msg.stream, line_no-1)
+            range_name = "{}!A{}:ZZZ200000".format(msg.stream, line_no-1)
             logger.info(f"Range name: {range_name}")
             append = functools.partial(append_to_sheet, service, spreadsheet['spreadsheetId'], range_name)
             update_row = functools.partial(update_to_sheet, service, spreadsheet['spreadsheetId'])
