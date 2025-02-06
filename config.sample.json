@@ -1,3 +1,13 @@
 {
     "spreadsheet_id": "abcdefgh-hijklmn-opqrstuvwxyz123456789ABCDEF"
 }
+
+// or
+
+{
+    "files": [
+        {
+            "id": "abcdefgh-hijklmn-opqrstuvwxyz123456789ABCDEF"
+        }
+    ]
+}

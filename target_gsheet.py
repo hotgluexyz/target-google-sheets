@@ -290,7 +290,13 @@ def main():
                               discoveryServiceUrl=discoveryUrl)
 
     # Get spreadsheet_id
-    spreadsheet = get_spreadsheet(service, config['spreadsheet_id'])
+    try:
+        spreadsheet_id = config['spreadsheet_id'] if 'spreadsheet_id' in config else config['files'][0]['id']
+    except Exception as e:
+        logger.error(f"Error getting spreadsheet_id: {e}")
+        logger.error(f"Either 'spreadsheet_id' or a list called 'files' with at least one element that contains the 'id' of the spreadsheet must be provided in the config")
+        raise e
+    spreadsheet = get_spreadsheet(service, spreadsheet_id)
 
     input = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
     state = None
