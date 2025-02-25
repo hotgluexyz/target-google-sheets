@@ -259,8 +259,21 @@ def persist_lines(service, spreadsheet, lines):
             if data is not None and not new_sheet_needed and not len(key_properties[msg.stream]):
                 print("No primary keys provided, not able to update existing rows")
 
-            if not posted:
-                result = append([flattened_record.get(x, None) for x in headers_by_stream[msg.stream]]) # order by actual headers found in sheet
+            if not posted:            
+                values = [flattened_record.get(x, None) for x in headers_by_stream[msg.stream]]
+
+                # Split cell values that exceed the maximum limit
+                split_values = []
+                for value in values:
+                    if len(str(value)) > 50000:
+                        chunks = [str(value)[i:i + 50000] for i in range(0, len(str(value)), 50000)]
+                        split_values.extend(chunks)
+                    else:
+                        split_values.append(str(value))
+
+                # Perform batch updates for split values
+                for split_value in split_values:
+                    result = append([split_value])  # Order by actual headers found in sheet
 
             state = None
         elif isinstance(msg, singer.StateMessage):
