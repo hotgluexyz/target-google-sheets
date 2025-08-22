@@ -45,7 +45,6 @@ logging.getLogger('googleapiclient.discovery_cache').setLevel(logging.ERROR)
 logger = singer.get_logger()
 
 MAX_RETRIES = 10
-BATCH_SIZE = 1000  # Default batch size for bulk operations
 
 def get_credentials(config):
     """Gets valid user credentials from storage.
@@ -244,11 +243,8 @@ def get_pk_index(properties_arr, key_properties):
     return pk_indexes
 
 
-def get_dynamic_batch_size(column_count, batch_size=None):
+def get_dynamic_batch_size(column_count):
     """Get optimal batch size based on number of columns in the stream."""
-    if batch_size is not None:
-        return batch_size
-
     if column_count <= 5:
         return 10000
     elif column_count <= 10:
