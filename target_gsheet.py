@@ -243,6 +243,21 @@ def get_pk_index(properties_arr, key_properties):
             pk_indexes.append(i)
     return pk_indexes
 
+
+def get_dynamic_batch_size(column_count, batch_size=None):
+    """Get optimal batch size based on number of columns in the stream."""
+    if batch_size is not None:
+        return batch_size
+
+    if column_count <= 5:
+        return 10000
+    elif column_count <= 10:
+        return 5000
+    elif column_count <= 20:
+        return 1000
+    else:
+        return 500
+
 def process_record_batch(service, spreadsheet_id, stream_name, batch_records, headers, key_properties, existing_data=None):
     """Process a batch of records for a specific stream."""
     if not batch_records:
@@ -305,7 +320,7 @@ def process_record_batch(service, spreadsheet_id, stream_name, batch_records, he
     return results
 
 
-def persist_lines(service, spreadsheet, lines, batch_size):
+def persist_lines(service, spreadsheet, lines, batch_size=None):
     state = None
     schemas = {}
     key_properties = {}
@@ -409,13 +424,21 @@ def persist_lines(service, spreadsheet, lines, batch_size):
                     header_range = f"{stream_name}!A1:ZZZ1"
                     bulk_append_to_sheet(service, spreadsheet['spreadsheetId'], header_range, [headers_by_stream[stream_name]])
         
-        # Process records in batches
+        # Process records in batches with dynamic sizing based on column count
         headers = headers_by_stream.get(stream_name, [])
         existing_data = existing_data_by_stream.get(stream_name)
         
-        for i in range(0, len(stream_records), batch_size):
-            batch = stream_records[i:i + batch_size]
-            logger.info(f"Processing batch {i//batch_size + 1} of {(len(stream_records)-1)//batch_size + 1} for stream '{stream_name}' ({len(batch)} records)")
+        if batch_size is not None:
+            dynamic_batch_size = batch_size
+        else:
+            # Calculate dynamic batch size based on column count
+            column_count = len(headers)
+            dynamic_batch_size = get_dynamic_batch_size(column_count)
+            logger.info(f"Stream '{stream_name}' has {column_count} columns, using batch size: {dynamic_batch_size}")
+        
+        for i in range(0, len(stream_records), dynamic_batch_size):
+            batch = stream_records[i:i + dynamic_batch_size]
+            logger.info(f"Processing batch {i//dynamic_batch_size + 1} of {(len(stream_records)-1)//dynamic_batch_size + 1} for stream '{stream_name}' ({len(batch)} records)")
             
             process_record_batch(
                 service=service,
@@ -455,8 +478,11 @@ def main():
 
     input = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
     state = None
-    batch_size = config.get('batch_size', BATCH_SIZE)
-    logger.info(f"Using batch size: {batch_size}")
+    batch_size = config.get('batch_size')
+    if batch_size is not None:
+        logger.info(f"Using batch size: {batch_size}")
+    else:
+        logger.info("Using dynamic batch sizes based on column count")
     state = persist_lines(service, spreadsheet, input, batch_size)
     emit_state(state)
     logger.debug("Exiting normally")

@@ -87,6 +87,17 @@ You can configure the target in two ways:
 
 - **`batch_size`** (integer, optional, default: 1000): The number of records to process in each batch operation. Larger batch sizes can improve performance for large datasets but may use more memory. Adjust based on your data size and system resources.
 
+#### Automatic Column-Based Batching
+
+The target automatically optimizes batch sizes based on the number of columns in each stream:
+
+- **1-5 columns**: 10,000 records per batch
+- **6-10 columns**: 5,000 records per batch  
+- **11-20 columns**: 1,000 records per batch
+- **20+ columns**: 500 records per batch
+
+This intelligent batching provides optimal performance by using larger batches for narrow tables and smaller batches for wide tables to stay within Google Sheets API limits.
+
 ### Step 3: Install and Run
 
 First, make sure Python 3 is installed on your system or follow these
