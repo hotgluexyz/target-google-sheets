@@ -268,8 +268,7 @@ def process_record_batch(service, spreadsheet_id, stream_name, batch_records, he
             # Look for existing row to update
             for i, existing_row in enumerate(existing_rows):
                 if (len(existing_row) > pk_index and 
-                    existing_row[pk_index] == record_pk_value):
-                    
+                    existing_row[pk_index] == str(record_pk_value)):
                     # Found matching row - prepare for update
                     row_index = i + 1  # Google Sheets is 1-indexed
                     range_name = f"{stream_name}!A{row_index}:ZZZ{row_index}"
