@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+from datetime import datetime
 import functools
 import io
 import os
@@ -13,6 +14,7 @@ import http.client
 import urllib
 import pkg_resources
 import backoff
+import psutil
 
 from jsonschema import validate
 import singer
@@ -45,6 +47,12 @@ logging.getLogger('googleapiclient.discovery_cache').setLevel(logging.ERROR)
 logger = singer.get_logger()
 
 MAX_RETRIES = 10
+
+def log_memory_usage(msg):
+    process = psutil.Process(os.getpid())
+    memory_usage = process.memory_info().rss / 1024 / 1024  # Convert to MB
+    logger.info(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {msg} - Memory usage: {memory_usage:.2f} MB")
+
 
 def get_credentials(config):
     """Gets valid user credentials from storage.
@@ -328,6 +336,7 @@ def persist_lines(service, spreadsheet, lines, batch_size=None):
     
     lines = list(lines)
     
+    log_memory_usage("Starting to parse messages")
     # First pass: Parse all messages and collect by type
     for line_no, line in enumerate(lines):
         try:
@@ -357,6 +366,11 @@ def persist_lines(service, spreadsheet, lines, batch_size=None):
             
         else:
             raise Exception("Unrecognized message {}".format(msg))
+        
+        if line_no % 1000 == 0:
+            log_memory_usage(f"Parsed {line_no} messages")
+    
+    log_memory_usage("Finished parsing messages")
     
     logger.info(f"Collected {sum(len(records) for records in records_by_stream.values())} total records across {len(records_by_stream)} streams")
     
@@ -479,7 +493,10 @@ def main():
         logger.info(f"Using batch size: {batch_size}")
     else:
         logger.info("Using dynamic batch sizes based on column count")
+    
+    log_memory_usage("Starting to process records")
     state = persist_lines(service, spreadsheet, input, batch_size)
+    log_memory_usage("Finished processing records")
     emit_state(state)
     logger.debug("Exiting normally")
 
