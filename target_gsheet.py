@@ -2,17 +2,12 @@
 
 import argparse
 from datetime import datetime
-import functools
 import io
 import os
 import sys
 import json
 import logging
 import collections
-import threading
-import http.client
-import urllib
-import pkg_resources
 import backoff
 import psutil
 
@@ -25,13 +20,12 @@ from apiclient import discovery
 from googleapiclient.errors import HttpError
 from oauth2client import client
 from oauth2client import tools
-from oauth2client.file import Storage
 import ssl
 
 try:
     collectionsAbc = collections.abc
 except AttributeError:
-    collectionsAbc = collections   
+    collectionsAbc = collections
 
 
 # Read the config
@@ -331,54 +325,29 @@ def persist_lines(service, spreadsheet, lines, batch_size=None):
     headers_by_stream = {}
     existing_data_by_stream = {}
     
-    # Collect all records by stream
-    records_by_stream = collections.defaultdict(list)
+    # Process streams individually for memory efficiency
     
     lines = list(lines)
-    
-    log_memory_usage("Starting to parse messages")
-    # First pass: Parse all messages and collect by type
-    for line_no, line in enumerate(lines):
+    stream_schemas = [s for s in lines if '"type": "SCHEMA"' in s]
+    stream_names = []
+    for line_no, schema_line in enumerate(stream_schemas):
         try:
-            msg = singer.parse_message(line)
+            msg = singer.parse_message(schema_line)
         except json.decoder.JSONDecodeError:
-            logger.error("Unable to parse:\n{}".format(line))
+            logger.error("Unable to parse:\n{}".format(schema_line))
             raise
-
-        if isinstance(msg, singer.StateMessage):
-            logger.debug('Setting state to {}'.format(msg.value))
-            state = msg.value
-            
-        elif isinstance(msg, singer.SchemaMessage):
+        
+        if isinstance(msg, singer.SchemaMessage):
             schemas[msg.stream] = msg.schema
             key_properties[msg.stream] = msg.key_properties
+            logger.info(f"Stream '{msg.stream}' has {len(msg.schema['properties'])} columns")
+            stream_names.append(msg.stream)
             
-        elif isinstance(msg, singer.RecordMessage):
-            if msg.stream not in schemas:
-                raise Exception("A record for stream {} was encountered before a corresponding schema".format(msg.stream))
-                
-            schema = schemas[msg.stream]
-            validate(msg.record, schema)
-            flattened_record = flatten(msg.record)
-            flattened_record = append_schema_keys(flattened_record, schema)
-            
-            records_by_stream[msg.stream].append(flattened_record)
-            
-        else:
-            raise Exception("Unrecognized message {}".format(msg))
+    # Process each stream individually to avoid loading all data into memory
+    for stream_name in stream_names:
+        logger.info(f"Processing stream '{stream_name}' with {len(schemas[stream_name]['properties'])} columns")
         
-        if line_no % 1000 == 0:
-            log_memory_usage(f"Parsed {line_no} messages")
-    
-    log_memory_usage("Finished parsing messages")
-    
-    logger.info(f"Collected {sum(len(records) for records in records_by_stream.values())} total records across {len(records_by_stream)} streams")
-    
-    # Second pass: Process records by stream in batches
-    for stream_name, stream_records in records_by_stream.items():
-        logger.info(f"Processing {len(stream_records)} records for stream '{stream_name}'")
-        
-        # Check if sheet exists
+        # Initialize stream setup
         matching_sheet = [s for s in spreadsheet['sheets'] if s['properties']['title'] == stream_name]
         new_sheet_needed = len(matching_sheet) == 0
         
@@ -386,16 +355,9 @@ def persist_lines(service, spreadsheet, lines, batch_size=None):
             # Create new sheet
             schema = schemas[stream_name]
             columns_to_be_added = len(schema.get("properties", {}).keys())
-            lines_to_be_added = len(stream_records)
-            add_sheet(service, spreadsheet['spreadsheetId'], stream_name, lines_to_be_added + 100, columns_to_be_added + 10)
+            add_sheet(service, spreadsheet['spreadsheetId'], stream_name, 10000, columns_to_be_added)
             spreadsheet = get_spreadsheet(service, spreadsheet['spreadsheetId'])  # refresh
-            
-            # Set headers from first record
-            if stream_records:
-                headers_by_stream[stream_name] = list(stream_records[0].keys())
-                header_range = f"{stream_name}!A1:ZZZ1"
-                bulk_append_to_sheet(service, spreadsheet['spreadsheetId'], header_range, [headers_by_stream[stream_name]])
-        
+            logger.info(f"Created new sheet '{stream_name}'")
         else:
             # Get existing headers and data for updates
             range_name = f"{stream_name}!A:ZZZ"
@@ -411,57 +373,114 @@ def persist_lines(service, spreadsheet, lines, batch_size=None):
                     pks = key_properties[stream_name]
                     pk_indexes = get_pk_index(sheet_headers, pks)
                     key_properties[stream_name + "_pk_index"] = pk_indexes
-                
-                # Check if we need to add new columns
-                if stream_records:
-                    new_records_columns = stream_records[0].keys()
-                    new_columns = [col for col in new_records_columns if col not in sheet_headers]
-                    if new_columns:
-                        new_headers = sheet_headers + new_columns
-                        headers_range = f"{stream_name}!A1:ZZZ1"
-                        update_to_sheet(service, spreadsheet['spreadsheetId'], headers_range, new_headers)
-                        headers_by_stream[stream_name] = new_headers
-                        
-                        # Update primary key indexes
-                        if key_properties.get(stream_name):
-                            pks = key_properties[stream_name]
-                            pk_indexes = get_pk_index(new_headers, pks)
-                            key_properties[stream_name + "_pk_index"] = pk_indexes
-            else:
-                # Empty sheet - set headers from first record
-                if stream_records:
-                    headers_by_stream[stream_name] = list(stream_records[0].keys())
-                    header_range = f"{stream_name}!A1:ZZZ1"
-                    bulk_append_to_sheet(service, spreadsheet['spreadsheetId'], header_range, [headers_by_stream[stream_name]])
         
-        # Process records in batches with dynamic sizing based on column count
-        headers = headers_by_stream.get(stream_name, [])
-        existing_data = existing_data_by_stream.get(stream_name)
-        
+        # Determine batch size for this stream
         if batch_size is not None:
             dynamic_batch_size = batch_size
         else:
-            # Calculate dynamic batch size based on column count
-            column_count = len(headers)
+            column_count = len(schemas[stream_name]['properties'])
             dynamic_batch_size = get_dynamic_batch_size(column_count)
-            logger.info(f"Stream '{stream_name}' has {column_count} columns, using batch size: {dynamic_batch_size}")
+            logger.info(f"Stream '{stream_name}' using batch size: {dynamic_batch_size}")
         
-        for i in range(0, len(stream_records), dynamic_batch_size):
-            batch = stream_records[i:i + dynamic_batch_size]
-            logger.info(f"Processing batch {i//dynamic_batch_size + 1} of {(len(stream_records)-1)//dynamic_batch_size + 1} for stream '{stream_name}' ({len(batch)} records)")
-            
-            process_record_batch(
-                service=service,
-                spreadsheet_id=spreadsheet['spreadsheetId'],
-                stream_name=stream_name,
-                batch_records=batch,
-                headers=headers,
-                key_properties=key_properties,
-                existing_data=existing_data
-            )
+        # Process records for this stream in batches
+        batch_records = []
+        stream_record_count = 0
+        batch_count = 0
+        
+        # Filter and process records for this specific stream
+        for line_no, line in enumerate(lines):
+            if f'"type": "RECORD", "stream": "{stream_name}"' in line:
+                try:
+                    msg = singer.parse_message(line)
+                    if isinstance(msg, singer.RecordMessage) and msg.stream == stream_name:
+                        schema = schemas[stream_name]
+                        validate(msg.record, schema)
+                        flattened_record = flatten(msg.record)
+                        flattened_record = append_schema_keys(flattened_record, schema)
+                        
+                        batch_records.append(flattened_record)
+                        stream_record_count += 1
+                        
+                        # Process batch when it's full
+                        if len(batch_records) >= dynamic_batch_size:
+                            batch_count += 1
+                            process_stream_batch(service, spreadsheet, stream_name, batch_records,
+                                               headers_by_stream, key_properties, existing_data_by_stream, batch_count)
+                            batch_records = []  # Clear batch
+                            
+                except json.decoder.JSONDecodeError:
+                    logger.error("Unable to parse:\n{}".format(line))
+                    continue
+        
+        # Process remaining records in final batch
+        if batch_records:
+            batch_count += 1
+            process_stream_batch(service, spreadsheet, stream_name, batch_records,
+                               headers_by_stream, key_properties, existing_data_by_stream, batch_count)
+        
+        logger.info(f"Completed stream '{stream_name}': {stream_record_count} records processed in {batch_count} batches")
+        
+        # Process state messages after each stream
+        for line in lines:
+            if '"type": "STATE"' in line:
+                try:
+                    msg = singer.parse_message(line)
+                    if isinstance(msg, singer.StateMessage):
+                        state = msg.value
+                except json.decoder.JSONDecodeError:
+                    continue
     
-    logger.info("Bulk processing completed")
+    logger.info("Stream-by-stream processing completed")
     return state
+
+
+def process_stream_batch(service, spreadsheet, stream_name, batch_records, headers_by_stream, 
+                        key_properties, existing_data_by_stream, batch_num):
+    """Process a batch of records for a specific stream."""
+    if not batch_records:
+        return
+    
+    logger.info(f"Processing batch {batch_num} for stream '{stream_name}' ({len(batch_records)} records)")
+    
+    # Set headers if not done yet (for new sheets)
+    if stream_name not in headers_by_stream and batch_records:
+        headers_by_stream[stream_name] = list(batch_records[0].keys())
+        header_range = f"{stream_name}!A1:ZZZ1"
+        bulk_append_to_sheet(service, spreadsheet['spreadsheetId'], header_range, [headers_by_stream[stream_name]])
+        logger.info(f"Set headers for sheet '{stream_name}': {len(headers_by_stream[stream_name])} columns")
+    
+    # Check for new columns
+    headers = headers_by_stream.get(stream_name, [])
+    if batch_records and headers:
+        new_records_columns = batch_records[0].keys()
+        new_columns = [col for col in new_records_columns if col not in headers]
+        if new_columns:
+            new_headers = headers + new_columns
+            headers_range = f"{stream_name}!A1:ZZZ1"
+            update_to_sheet(service, spreadsheet['spreadsheetId'], headers_range, new_headers)
+            headers_by_stream[stream_name] = new_headers
+            
+            # Update primary key indexes
+            if key_properties.get(stream_name):
+                pks = key_properties[stream_name]
+                pk_indexes = get_pk_index(new_headers, pks)
+                key_properties[stream_name + "_pk_index"] = pk_indexes
+            
+            logger.info(f"Added {len(new_columns)} new columns to sheet '{stream_name}'")
+    
+    # Process the batch
+    headers = headers_by_stream.get(stream_name, [])
+    existing_data = existing_data_by_stream.get(stream_name)
+    
+    process_record_batch(
+        service=service,
+        spreadsheet_id=spreadsheet['spreadsheetId'],
+        stream_name=stream_name,
+        batch_records=batch_records,
+        headers=headers,
+        key_properties=key_properties,
+        existing_data=existing_data
+    )
 
 
 def main():
@@ -482,7 +501,7 @@ def main():
         spreadsheet_id = config['spreadsheet_id'] if 'spreadsheet_id' in config else config['files'][0]['id']
     except Exception as e:
         logger.error(f"Error getting spreadsheet_id: {e}")
-        logger.error(f"Either 'spreadsheet_id' or a list called 'files' with at least one element that contains the 'id' of the spreadsheet must be provided in the config")
+        logger.error("Either 'spreadsheet_id' or a list called 'files' with at least one element that contains the 'id' of the spreadsheet must be provided in the config")
         raise e
     spreadsheet = get_spreadsheet(service, spreadsheet_id)
 
