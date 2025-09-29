@@ -92,3 +92,5 @@ ENV/
 *~
 config.json
 client_secret.json
+.vscode/
+.DS_Store
