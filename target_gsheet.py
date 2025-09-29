@@ -408,9 +408,9 @@ def persist_lines(service, spreadsheet, lines, batch_size=None):
                                                headers_by_stream, key_properties, existing_data_by_stream, batch_count)
                             batch_records = []  # Clear batch
                             
-                except json.decoder.JSONDecodeError:
+                except json.decoder.JSONDecodeError as e:
                     logger.error("Unable to parse:\n{}".format(line))
-                    continue
+                    raise e
         
         # Process remaining records in final batch
         if batch_records:
