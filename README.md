@@ -42,19 +42,61 @@ visualize data.
 
 ### Step 2: Configure
 
-Create a file called `config.json` in your working directory,
-following [config.sample.json](config.sample.json). The required
-`spreadsheet_id` parameter is the value between the "/d/" and the
-"/edit" in the URL of your spreadsheet. For example, consider the
-following URL that references a Google Sheets spreadsheet:
+Create a file called `config.json` in your working directory, following [config.sample.json](config.sample.json). 
+
+#### Finding Your Spreadsheet ID
+
+To find your spreadsheet ID, look at the URL of your Google Sheets spreadsheet. For example:
 
 ```
 https://docs.google.com/spreadsheets/d/1qpyC0XzvTcKT6EISywvqESX3A0MwQoFDE8p-Bll4hps/edit#gid=0
 ```
 
-The ID of this spreadsheet is
-`1qpyC0XzvTcKT6EISywvqESX3A0MwQoFDE8p-Bll4hps`.
+The spreadsheet ID is the value between `/d/` and `/edit`: `1qpyC0XzvTcKT6EISywvqESX3A0MwQoFDE8p-Bll4hps`
 
+#### Configuration Options
+
+You can configure the target in two ways:
+
+**Option 1: Using spreadsheet_id**
+```json
+{
+    "spreadsheet_id": "1qpyC0XzvTcKT6EISywvqESX3A0MwQoFDE8p-Bll4hps",
+    "batch_size": 1000
+}
+```
+
+**Option 2: Using files array**
+```json
+{
+    "files": [
+        {
+            "id": "1qpyC0XzvTcKT6EISywvqESX3A0MwQoFDE8p-Bll4hps",
+            "name": "My Data Sheet"
+        }
+    ],
+    "batch_size": 1000
+}
+```
+
+#### Configuration Parameters
+
+- **`spreadsheet_id`** (string, optional): The ID of the Google Sheets spreadsheet to write data to. Required if `files` is not provided.
+
+- **`files`** (array, optional): An array of spreadsheet objects containing `id` and optional `name` fields. Required if `spreadsheet_id` is not provided. Use this format for compatibility with multi-file configurations.
+
+- **`batch_size`** (integer, optional, default: 1000): The number of records to process in each batch operation. Larger batch sizes can improve performance for large datasets but may use more memory. Adjust based on your data size and system resources.
+
+#### Automatic Column-Based Batching
+
+The target automatically optimizes batch sizes based on the number of columns in each stream:
+
+- **1-5 columns**: 10,000 records per batch
+- **6-10 columns**: 5,000 records per batch  
+- **11-20 columns**: 1,000 records per batch
+- **20+ columns**: 500 records per batch
+
+This intelligent batching provides optimal performance by using larger batches for narrow tables and smaller batches for wide tables to stay within Google Sheets API limits.
 
 ### Step 3: Install and Run
 
@@ -106,4 +148,3 @@ Copyright &copy; 2017 Stitch
 [Fixerio]: https://github.com/singer-io/tap-fixerio
 [python-mac]: http://docs.python-guide.org/en/latest/starting/install3/osx/
 [python-ubuntu]: https://www.digitalocean.com/community/tutorials/how-to-install-python-3-and-set-up-a-local-programming-environment-on-ubuntu-16-04
-
